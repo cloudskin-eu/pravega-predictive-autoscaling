@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Pod
+metadata:
+    name: latency-writer-4360-7
+spec:
+  containers:
+    - name: latency-writer-4360-7
+      image: 018573873269.dkr.ecr.us-east-1.amazonaws.com/gstreamer:pravega-prod-latency
+      imagePullPolicy: Always
+      env:
+        - name: ENTRYPOINT
+          value: "/usr/src/gstreamer-pravega/python_apps/pravega_latency_writer.py --pravega-controller-uri pravega-pravega-controller:9090 --scope benchmark4360 --stream latency --pravega-buffer-size 1024 --video-height 1280 --video-width 720 --video-fps 30 --video-bitrate 5000 --sleep-seconds 0.0"
