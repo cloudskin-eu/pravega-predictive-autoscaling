@@ -1,40 +1,44 @@
 """
 Trace File Processor for Pravega Autoscaler and Workload Generator
-
 This script replays numerical values from a trace file, applying them either to
 the Pravega autoscaler (to change segment store replicas) or to a workload
 generator (to simulate workload intensity). The replay is time-scaled and can
 optionally include delays to mimic real-time progression.
 """
-
 import time
 import threading
+from datetime import datetime
 from pravega_autoscaler import PravegaTraceBasedAutoscaler
 from workload_executors import VideoWorkloadGenerator
 
+def log_with_time(message):
+    """Helper function to log messages with timestamps."""
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TracePlayer - {message}")
 
-def process_trace_file(file_path, processing_callback, time_unit='minutes', replay_speed=20, do_sleep=False):
+def process_trace_file_with_range(file_path, processing_callback, start_line=0, end_line=None, time_unit='minutes', replay_speed=20, do_sleep=False):
     """
-    Replay values from a trace file and pass them to a processing callback.
+    Replay values from a trace file within a specific range and pass them to a processing callback.
     
     Args:
         file_path (str): Path to the trace file. Each line should contain a numeric value.
         processing_callback (Callable): Function to process each parsed value.
+        start_line (int): Starting line index (inclusive). Defaults to 0.
+        end_line (int): Ending line index (exclusive). None means process till end of file.
         time_unit (str, optional): Time unit in the trace file ('seconds', 'minutes', or 'hours').
                                    Defaults to 'minutes'.
         replay_speed (int, optional): Factor to speed up or slow down replay.
                                       Higher values = faster replay. Defaults to 20.
         do_sleep (bool, optional): If True, sleep between trace values to simulate passage of time.
                                    Defaults to False.
-
     Behavior:
         - Reads the trace file line by line.
+        - Skips lines until start_line
+        - Stops processing after end_line
         - Parses each line as a float value.
         - Invokes the callback with the parsed value.
         - Optionally sleeps between iterations to simulate real-time behavior.
-
     Logs:
-        Prints the parsed values and sleep intervals, or skips invalid lines.
+        Prints the parsed values and sleep intervals, or skips invalid lines with timestamps.
     """
     # Define time unit multipliers
     time_unit_multiplier = {
@@ -48,21 +52,42 @@ def process_trace_file(file_path, processing_callback, time_unit='minutes', repl
     
     # Calculate sleep interval based on replay speed
     sleep_interval = unit_multiplier / replay_speed
+
+    total_elapsed_virtual_time = 0  # Track cumulative virtual time passed in simulation
+    processed_count = 0  # Track how many lines we've actually processed
     
     # Process the trace file
     with open(file_path, 'r') as file:
-        for line in file:
+        for idx, line in enumerate(file):
+            # Skip lines before start_line
+            if idx < start_line:
+                continue
+                
+            # Stop if we've reached end_line
+            if end_line is not None and idx >= end_line:
+                break
+                
             try:
                 value = float(line.strip())
-                print(f"TracePlayer - Parsed trace value: {value}. Now processing...")
+                log_with_time(f"Parsed trace value at original index {idx}, processed index {processed_count}: {value}. Now processing...")
                 processing_callback(value)
-                
+
                 if do_sleep:
-                    print(f"TracePlayer - Waiting/Sleep interval for {sleep_interval} seconds.")
+                    log_with_time(f"Waiting/Sleep interval for {sleep_interval:.2f} seconds.")
                     time.sleep(sleep_interval)
+                
+                total_elapsed_virtual_time += unit_multiplier
+                log_with_time(f"Simulated elapsed time so far: {total_elapsed_virtual_time} {time_unit}")
+                processed_count += 1
                     
             except ValueError:
-                print(f"TracePlayer - Skipping line: {line.strip()}, not a valid numerical value")
+                log_with_time(f"Skipping line: '{line.strip()}', not a valid numerical value.")
+
+def process_trace_file(file_path, processing_callback, time_unit='minutes', replay_speed=20, do_sleep=False):
+    """
+    Replay start and end from a trace file and pass them to a processing callback.
+    """
+    return process_trace_file_with_range(file_path, processing_callback, 0, None, time_unit, replay_speed, do_sleep)
 
 def main():
     """
@@ -76,40 +101,51 @@ def main():
     of actual workload changes.
     """
     # Configuration
-    TRACE_PATH = "/home/ubuntu/autoscaling/pravega-predictive-autoscaling/streaming-auto-scaler/resources/test.csv"
-    time_ahead = 20  
+    ORIGINAL_TRACE = "/home/ubuntu/autoscaling/pravega-predictive-autoscaling/streaming-auto-scaler/resources/nct.csv"
+    SEGMENT_STORES_TRACE = "/home/ubuntu/autoscaling/pravega-predictive-autoscaling/streaming-auto-scaler/results/predictive_lstm_20ms_95p_20min_num_segment_stores.csv"
+    time_ahead = 100 # ~2 minutes  
+    replay_speed = 125 # 125x faster than real-time
     
+    # Range configuration for nct.csv (lines 10080 to 20160)
+    START_LINE = 10080
+    END_LINE = 20160
+
+    log_with_time("Starting Pravega Autoscaler thread...")
     pravega_autoscaler = threading.Thread(
         target=process_trace_file, 
         args=(
-            TRACE_PATH,
+            SEGMENT_STORES_TRACE,
             PravegaTraceBasedAutoscaler('default').run,
             'minutes', 
-            2, 
+            replay_speed, 
             True
         )
     )
     pravega_autoscaler.start()
     
     # Wait before starting workload generator
+    log_with_time(f"Waiting {time_ahead} seconds before starting workload generator...")
     time.sleep(time_ahead)
     
+    log_with_time("Starting Workload Generator thread (processing lines {} to {})...".format(START_LINE, END_LINE))
     workload_generator = threading.Thread(
-        target=process_trace_file, 
+        target=process_trace_file_with_range, 
         args=(
-            TRACE_PATH,
+            ORIGINAL_TRACE,
             VideoWorkloadGenerator('default').run,
+            START_LINE,
+            END_LINE,
             'minutes', 
-            2, 
+            replay_speed, 
             True
         )
     )
     workload_generator.start()
+
     workload_generator.join()
     pravega_autoscaler.join()
     
-    print("TracePlayer - Main thread exiting")
-
+    log_with_time("Main thread exiting")
 
 if __name__ == "__main__":
     main()
