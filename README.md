@@ -285,6 +285,11 @@ ORACLE_TRACE = "streaming-auto-scaler/results/predictive_oracle_20ms_95p_20min_n
 ```
 To use any one of them, simply replace the variable in the `pravega_autoscaler` thread with the desired trace.
 
+### Results
+Example results with CSVs and plots can be in the [resources](streaming-auto-scaler/resources) folder:
+- `/latencies` contains p90 segment write latencies for reactive and LSTM trace runs, alongside a CDF plot 
+- `/workload` contains workload and segment store pod counts for reactive and LSTM trace runs, alongside a pod count plot
+
 ## Acknowledgements
 
 <img width="80px" src="https://cloudskin.eu/assets/img/europe.jpg">
