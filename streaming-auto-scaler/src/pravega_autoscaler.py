@@ -68,8 +68,7 @@ class PravegaTraceBasedAutoscaler:
                 body=patch_body,
             )
 
-            print(f"PravegaAutoscalerGenerator - Successfully patched PravegaCluster.")
-            print(f"Updated Segment Store Count: {num_segmentstores}")
+            print(f"PravegaAutoscalerGenerator - Successfully patched PravegaCluster. Updated Segment Store Count: {num_segmentstores}")
 
         except ApiException as e:
             print(f"PravegaAutoscalerGenerator - API Exception when patching PravegaCluster:")

@@ -1,0 +1,159 @@
+## Default values for pravega.
+## This is a YAML-formatted file.
+
+tls: {}
+
+reservedPortList: []
+# - 10010  
+authentication:
+  enabled: false
+  ## passwordAuthSecret is ignored if authentication is disabled
+  passwordAuthSecret:
+  ##segmentStoreToken is ignored if authentication is disabled
+  #segmentStoreTokenSecret:
+  ##controllerTokenSecret is ignored if authentication is disabled
+  #controllerTokenSecret:
+
+influxDBSecret: {}
+  # name:
+  # path:
+zookeeperUri: zookeeper-client:2181
+bookkeeperUri: bookkeeper-bookie-headless:3181
+
+externalAccess:
+  enabled: false
+  ## type and domainName are ignored if external access is disabled
+  type: LoadBalancer
+  domainName:
+
+image:
+  repository: pravega/pravega
+  pullPolicy: IfNotPresent
+  tag: 0.13.0
+
+hooks:
+  image:
+    repository: lachlanevenson/k8s-kubectl
+    tag: v1.23.2
+  securityContext: {}
+  #  runAsUser: 1001
+  #  runAsGroup: 1001
+
+  backoffLimit: 10
+
+debugLogging: false
+
+controller:
+  replicas: 1
+  maxUnavailableReplicas:
+  envVars: {}
+  svcNameSuffix:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  securityContext: {}
+  affinity: {}
+  service:
+
+    type:
+    annotations: {}
+  jvmOptions: ["-Xms512m", "-XX:+ExitOnOutOfMemoryError", "-XX:+CrashOnOutOfMemoryError", "-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=/tmp/dumpfile/heap", "-XX:MaxRAMPercentage=50.0", "-XX:+UseContainerSupport", "-XX:+PrintExtendedThreadInfo"]
+  labels: {}
+  annotations: {}
+  initContainers: []
+  tolerations: []
+  probes: {}
+
+segmentStore:
+  replicas: 1
+  maxUnavailableReplicas:
+  secret: {}
+
+  env:
+  containerEnv: {}
+  containers: {}
+  additionalVolumes: {}
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 4Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  securityContext: {}
+  affinity: {}
+  service:
+    type:
+    annotations: {}
+    loadBalancerIP:
+    externalTrafficPolicy:
+  jvmOptions: ["-Xms1g", "-Xmx1g", "-XX:MaxDirectMemorySize=2560m", "-XX:+ExitOnOutOfMemoryError", "-XX:+CrashOnOutOfMemoryError", "-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=/tmp/dumpfile/heap", "-XX:MaxRAMPercentage=50.0", "-XX:+UseContainerSupport", "-XX:+PrintExtendedThreadInfo"]
+  labels: {}
+  annotations: {}
+  stsNameSuffix:
+  headlessSvcNameSuffix:
+  initContainers: []
+  tolerations: []
+  probes: {}
+
+authImplementations: {}
+
+storage:
+  longtermStorage:
+    type: custom
+    custom: 
+      options:
+        pravegaservice.storage.layout: "CHUNKED_STORAGE"
+        pravegaservice.storage.impl.name: "S3"
+        s3.connect.config.uri: "http://minio-svc:9000"
+        s3.bucket: "pravega-lts"
+        s3.prefix: "/"
+        s3.connect.config.region: "us-east-1"
+        s3.connect.config.uri.override: "true"
+        s3.connect.config.access.key: "minioadmin"
+        s3.connect.config.secret.key: "minioadmin"
+      env:
+        TIER2_STORAGE: "S3"
+        AWS_ACCESS_KEY_ID: "minioadmin"
+        AWS_SECRET_ACCESS_KEY: "minioadmin"
+        
+  cache:
+    size: 20Gi
+    className:
+
+options:
+  bookkeeper.ensemble.size: "3"
+  bookkeeper.write.quorum.size: "3"
+  bookkeeper.ack.quorum.size: "3"
+  bookkeeper.write.timeout.milliseconds: "60000"
+  bookkeeper.write.outstanding.bytes.max: "33554432"
+  bookkeeper.ledger.size.max: "268435456"
+  pravegaservice.cache.size.max: "1610612736"
+  pravegaservice.cache.time.seconds.max: "600"
+  pravegaservice.service.listener.port: "12345"
+  hdfs.block.size: "67108864"
+  writer.flush.threshold.bytes: "67108864"
+  writer.flush.size.bytes.max: "67108864"
+  pravegaservice.container.count: "8"
+  controller.container.count: "8"
+  controller.retention.bucket.count: "4"
+  controller.service.asyncTaskPool.size: "20"
+  controller.retention.thread.count: "4"
+  log.level: "INFO"
+
+  # Metrics
+  emptyDirVolumeMounts: "heap-dump=/tmp/dumpfile/heap,logs=/opt/pravega/logs"
+  metrics.statistics.enable: "true"
+  metrics.influxDB.reporter.enable: "true"
+  metrics.influxDB.connect.uri: "http://influxdb-service:8086"
+  metrics.output.frequency.seconds: "5"
+
+  controller.metrics.statistics.enable: "true"
+  controller.metrics.influxDB.reporter.enable: "true"
+  controller.metrics.influxDB.connect.uri: "http://influxdb-service:8086"
+  controller.metrics.output.frequency.seconds: "5"
+

@@ -101,12 +101,15 @@ def main():
     of actual workload changes.
     """
     # Configuration
-    ORIGINAL_TRACE = "/home/ubuntu/autoscaling/pravega-predictive-autoscaling/streaming-auto-scaler/resources/nct.csv"
-    SEGMENT_STORES_TRACE = "/home/ubuntu/autoscaling/pravega-predictive-autoscaling/streaming-auto-scaler/results/predictive_lstm_20ms_95p_20min_num_segment_stores.csv"
-    time_ahead = 100 # ~2 minutes  
-    replay_speed = 125 # 125x faster than real-time
+    NCT_TRACE = "streaming-auto-scaler/resources/nct.csv"
+    LSTM_TRACE = "streaming-auto-scaler/results/predictive_lstm_20ms_95p_20min_num_segment_stores.csv" 
+    REACTIVE_TRACE = "streaming-auto-scaler/results/reactive_vanilla_20ms_95p_20min_num_segment_stores.csv"
+    REACTIVE_MEM_TRACE = "streaming-auto-scaler/results/reactive_memory_20ms_95p_20min_num_segment_stores.csv"
+    ORACLE_TRACE = "streaming-auto-scaler/results/predictive_oracle_20ms_95p_20min_num_segment_stores.csv"
+
+    time_ahead = 50 
+    replay_speed = 15 # 1 week in about 12 hours
     
-    # Range configuration for nct.csv (lines 10080 to 20160)
     START_LINE = 10080
     END_LINE = 20160
 
@@ -114,7 +117,7 @@ def main():
     pravega_autoscaler = threading.Thread(
         target=process_trace_file, 
         args=(
-            SEGMENT_STORES_TRACE,
+            LSTM_TRACE,
             PravegaTraceBasedAutoscaler('default').run,
             'minutes', 
             replay_speed, 
@@ -131,7 +134,7 @@ def main():
     workload_generator = threading.Thread(
         target=process_trace_file_with_range, 
         args=(
-            ORIGINAL_TRACE,
+            NCT_TRACE,
             VideoWorkloadGenerator('default').run,
             START_LINE,
             END_LINE,
