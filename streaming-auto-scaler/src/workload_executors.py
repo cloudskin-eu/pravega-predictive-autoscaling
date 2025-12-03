@@ -1,158 +1,148 @@
 """
 Video Workload Generator for Pravega + Kubernetes.
-
 This script automates the deployment of paired latency writer/reader pods 
 to a Kubernetes cluster for benchmarking video ingestion latency with Pravega.
-
-It supports:
-- Instantiating pods from inline YAML definitions.
-- Scaling the number of writer/reader pairs up or down.
-- Cleaning up pods when scaling down.
-
+Improvements:
+- Tracks active experiments explicitly instead of scanning all pods.
+- More efficient pod creation/deletion.
+- Cleanup upon startup.
 """
-
-from kubernetes import client, config
+from kubernetes import client, config, utils
 import time
-import subprocess
 import os
-
+import tempfile
+import subprocess
+import yaml
+from concurrent.futures import ThreadPoolExecutor
 
 # --------------------------------------------------------------------
-# Configuration constants (Pod template, Docker image, Pravega params)
+# Configuration constants
 # --------------------------------------------------------------------
-PODNAME = "PODNAME"
-NODENAME = "NODENAME"
-NODES = 3
-
-docker_image = 'xxxx.dkr.ecr.us-east-1.amazonaws.com/gstreamer:pravega-prod-latency'  # Private ECR image
-pod_yaml = "apiVersion: v1\n" + \
-           "kind: Pod\n" + \
-           "metadata:\n" + \
-           "    name: " + PODNAME + "\n" + \
-           "spec:\n" + \
-           "  containers:\n" + \
-           "    - name: " + PODNAME + "\n" + \
-           "      image: " + docker_image + "\n" + \
-           "      imagePullPolicy: Always\n" + \
-           "      env:\n" + \
-           "        - name: ENTRYPOINT\n" + \
-           "          value: "
-root_permission = "      securityContext:\n" + \
-                  "        allowPrivilegeEscalation: false\n" + \
-                  "        runAsUser: 0\n"
-docker_run_file = "docker run --rm --network host --privileged --user root --log-driver json-file --log-opt max-size=10m " + \
-                  "--log-opt max-file=2 -e ENTRYPOINT="
+CLI_PATH = "/home/ubuntu/pravega-0.13.0/bin/pravega-cli"
+docker_image = '018573873269.dkr.ecr.us-east-1.amazonaws.com/gstreamer:pravega-prod-latency'
+pod_template = """
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {pod_name}
+spec:
+  imagePullSecrets:
+    - name: aws-registry
+  containers:
+    - name: {container_name}
+      image: {image}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: ENTRYPOINT
+          value: "{entrypoint}"
+{security_context}
+"""
 entrypoint_writer = "/usr/src/gstreamer-pravega/python_apps/pravega_latency_writer.py " + \
                     "--pravega-controller-uri %s --scope %s --stream %s --pravega-buffer-size %s " + \
                     "--video-height %s --video-width %s --video-fps %s --video-bitrate %s --sleep-seconds %s"
 entrypoint_reader = "/usr/src/gstreamer-pravega/python_apps/pravega_latency_reader.py " + \
                     "--pravega-controller-uri %s --scope %s --stream %s --sleep-seconds %s"
-
 # Pravega stream configuration
 pravega_controller_uri = "pravega-pravega-controller:9090"
-scope = "test"
+scope_prefix = "test"
 stream = "latency"
 pravega_buffer_size = 1024
-
 # Video parameters
 video_height = 1280
 video_width = 720
 video_fps = 30
 video_bitrate = 5000
-
-# Sleep times for workload pacing
 writer_sleep_seconds = 0.0
 reader_sleep_seconds = 5.0
 
 
-def instantiate_pod(pod_name, pod_manifest):
-    """
-    Create and deploy a Kubernetes pod from the given YAML manifest.
-
-    Args:
-        pod_name (str): Name of the pod to create.
-        pod_manifest (str): Inline YAML definition of the pod.
-
-    Side effects:
-        - Writes the manifest to a temporary YAML file.
-        - Calls `kubectl create -f` to deploy the pod.
-        - Deletes the temporary YAML file afterwards.
-    """
+def instantiate_pod_from_dict(k8s_client, pod_spec):
+    fd, path = tempfile.mkstemp(suffix='.yaml')
     try:
-        yaml_path = "./" + pod_name + ".yaml"
-        writer_yaml_file = open(yaml_path, 'a')
-        writer_yaml_file.write(pod_manifest)
-        writer_yaml_file.close()
-        # Deploy pod.
-        command = ["kubectl", "create", "-f", yaml_path]
-        result = subprocess.run(command, capture_output=True, check=True, text=True)
-        os.remove(yaml_path)
-    except subprocess.CalledProcessError as e:
-        print(f"VideoWorkloadGenerator - Error invoking the script: {e}")
-
-    print(f"VideoWorkloadGenerator - Pod {pod_name} instantiated.")
+        with os.fdopen(fd, 'w') as tmp:
+            yaml.dump(pod_spec, tmp)
+        utils.create_from_yaml(k8s_client, path)
+    finally:
+        os.remove(path)
 
 
-def delete_pod(api_instance, namespace, pod_name):
-    """
-    Delete a Kubernetes pod in the given namespace.
+def delete_pod(api_instance, namespace, pod_name, scope=None):
+    # Delete the Kubernetes pod
+    try:
+        api_instance.delete_namespaced_pod(name=pod_name, namespace=namespace)
+        print(f"Deleted pod: {pod_name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            print(f"Failed to delete pod {pod_name}: {e}")
+    except Exception as e:
+        print(f"Unexpected error deleting pod {pod_name}: {e}")
 
-    Args:
-        api_instance: Kubernetes CoreV1Api instance.
-        namespace (str): Namespace containing the pod.
-        pod_name (str): Name of the pod to delete.
-    """
-    api_instance.delete_namespaced_pod(name=pod_name, namespace=namespace)
-    print(f"VideoWorkloadGenerator - Pod {pod_name} deleted.")
+    if scope:
+        try:
+            # Delete the latency stream
+            try:
+                subprocess.run([
+                    CLI_PATH,
+                    "stream", "delete",
+                    scope + "/latency",
+                    scope + "/latency-index"
+                ], check=True, capture_output=True, text=True)
+                print(f"Deleted stream: {scope}")
+            except subprocess.CalledProcessError as e:
+                if "not found" not in e.stderr.lower():
+                    print(f"Warning: Failed to delete streams of {scope}: {e.stderr}")
+
+            # Delete the scope
+            try:
+                subprocess.run([
+                    CLI_PATH,
+                    "scope", "delete", scope
+                ], check=True, capture_output=True, text=True)
+                print(f"Deleted scope: {scope}")
+            except subprocess.CalledProcessError as e:
+                if "not found" not in e.stderr.lower():
+                    print(f"Warning: Failed to delete scope {scope}: {e.stderr}")
+
+        except Exception as e:
+            print(f"Error during cleanup of scope {scope}: {e}")
 
 
 class VideoWorkloadGenerator:
-    """
-    Automates scaling of video workload pods in Kubernetes.
-
-    Each scaling step deploys or removes pairs of:
-    - A latency writer pod (produces video data into Pravega).
-    - A latency reader pod (consumes video data for benchmarking).
-    """
-
     def __init__(self, namespace):
-        """
-        Initialize the workload generator.
-
-        Args:
-            namespace (str): Kubernetes namespace where pods should run.
-        """
         self.namespace = namespace
+        config.load_kube_config()
+        self.v1 = client.CoreV1Api()
+        self.k8s_client = client.ApiClient()
+        # Thread pool for async deletions
+        self.executor = ThreadPoolExecutor(max_workers=10)  
+        
+        # Dictionary for current workload pods
+        self.active_workloads = {}
+        # On init, clean up leftover latency pods from previous runs
+        self._cleanup_old_pods()
+
+    def _cleanup_old_pods(self):
+        pods = self.v1.list_namespaced_pod(namespace=self.namespace).items
+        futures = []
+        for pod in pods:
+            if "latency" in pod.metadata.name:
+                future = self.executor.submit(delete_pod, self.v1, self.namespace, pod.metadata.name)
+                futures.append(future)
+        # Optionally wait or ignore completion
+        # for f in futures: f.result()
 
     def run(self, new_num_pods):
-        """
-        Scale the number of writer/reader pod pairs to `new_num_pods`.
-
-        Args:
-            new_num_pods (int): Desired number of writer/reader pairs.
-
-        Behavior:
-            - If scaling up, new writer/reader pods are created with unique IDs.
-            - If scaling down, excess pods are deleted.
-            - If unchanged, prints a no-op message.
-        """
-        new_num_pods = int(new_num_pods)  # We instantiate a pair of writer/reader on each scaling step.
-        config.load_kube_config()  # Load kube config from ~/.kube/config
-
-        v1 = client.CoreV1Api()
-
-        current_benchmark_pods = sorted(
-            [pod.metadata.name for pod in v1.list_namespaced_pod(namespace=self.namespace).items if "latency" in pod.metadata.name]
-        )
-        current_num_benchmark_pods = len(current_benchmark_pods)
-
-        if new_num_pods * 2 > current_num_benchmark_pods:
-            for i in range(int(current_num_benchmark_pods / 2), new_num_pods):
-                experiment_id = int(time.time()) + i  # random.randint(1, 100000)
-                writer_name = str(experiment_id) + "-latency-writer"
+        new_num_pods = int(new_num_pods)
+        current_count = len(self.active_workloads)
+        if new_num_pods > current_count:
+            # Scale up
+            for i in range(current_count, new_num_pods):
+                exp_id = str(int(time.time() * 1000)) + f"-{i}"
+                scope = f"{scope_prefix}{exp_id}"
+                writer_name = f"{exp_id}-latency-writer"
                 configured_writer_entrypoint = entrypoint_writer % (
                     pravega_controller_uri,
-                    scope + str(experiment_id),
+                    scope,
                     stream,
                     pravega_buffer_size,
                     video_height,
@@ -161,23 +151,47 @@ class VideoWorkloadGenerator:
                     video_bitrate,
                     writer_sleep_seconds,
                 )
-                writer_manifest = pod_yaml.replace(PODNAME, writer_name) + "\"" + configured_writer_entrypoint + "\"\n"
-                instantiate_pod(writer_name, writer_manifest)
-
-                reader_name = str(experiment_id) + "-latency-reader"
+                writer_pod_spec = yaml.safe_load(pod_template.format(
+                    pod_name=writer_name,
+                    container_name=writer_name,
+                    image=docker_image,
+                    entrypoint=configured_writer_entrypoint,
+                    security_context=""
+                ))
+                reader_name = f"{exp_id}-latency-reader"
                 configured_reader_entrypoint = entrypoint_reader % (
                     pravega_controller_uri,
-                    scope + str(experiment_id),
+                    scope,
                     stream,
                     reader_sleep_seconds,
                 )
-                reader_manifest = (
-                    pod_yaml.replace(PODNAME, reader_name) + "\"" + configured_reader_entrypoint + "\"\n" + root_permission
-                )
-                instantiate_pod(reader_name, reader_manifest)
-        elif new_num_pods * 2 < current_num_benchmark_pods:
-            for i in range(new_num_pods * 2, current_num_benchmark_pods):
-                pod_name = current_benchmark_pods[i]
-                delete_pod(v1, self.namespace, pod_name)
+                reader_pod_spec = yaml.safe_load(pod_template.format(
+                    pod_name=reader_name,
+                    container_name=reader_name,
+                    image=docker_image,
+                    entrypoint=configured_reader_entrypoint,
+                    security_context="      securityContext:\n        allowPrivilegeEscalation: false\n        runAsUser: 0"
+                ))
+                instantiate_pod_from_dict(self.k8s_client, writer_pod_spec)
+                instantiate_pod_from_dict(self.k8s_client, reader_pod_spec)
+                self.active_workloads[exp_id] = {
+                    "writer": writer_name,
+                    "reader": reader_name,
+                    "scope": scope  # Store scope for cleanup
+                }
+                print(f'WorkloadExecutor - Created workload pods - ID: {exp_id}')
+        elif new_num_pods < current_count:
+            # Scale down
+            ids_to_remove = list(self.active_workloads.keys())[new_num_pods:]
+            for exp_id in ids_to_remove:
+                info = self.active_workloads.pop(exp_id)
+                # Separate threads for scope deletion
+                self.executor.submit(delete_pod, self.v1, self.namespace, info["writer"], info.get("scope"))
+                self.executor.submit(delete_pod, self.v1, self.namespace, info["reader"], info.get("scope"))
+                print(f'WorkloadExecutor - Deleted workload pods - ID: {exp_id}')
         else:
-            print("VideoWorkloadGenerator - No change in the number of pods.")
+            print("WorkloadExecutor - No change in number of workload pods.")
+
+    def shutdown(self):
+        """Gracefully shut down the executor."""
+        self.executor.shutdown(wait=True)
